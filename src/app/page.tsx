@@ -1,69 +1,125 @@
-import Image from "next/image";
+import { Suspense } from "react";
+import Link from "next/link";
+import { connection } from "next/server";
+import { Bike, Clock, User, UtensilsCrossed } from "lucide-react";
+import { createClient } from "@/lib/supabase/server";
+import { statusRestaurante } from "@/lib/horario";
+import { moeda } from "@/lib/formatar";
+import CardapioLista from "@/components/cliente/CardapioLista";
+import BarraInferior from "@/components/cliente/BarraInferior";
+
+async function Cardapio() {
+  await connection();
+  const supabase = await createClient();
+
+  const [{ data: restaurante }, { data: categorias }, { data: produtos }] =
+    await Promise.all([
+      supabase.from("restaurante").select("*").limit(1).maybeSingle(),
+      supabase
+        .from("categorias")
+        .select("id, nome")
+        .eq("ativa", true)
+        .order("ordem"),
+      supabase
+        .from("produtos")
+        .select("id, categoria_id, nome, descricao, preco, imagem_url")
+        .eq("disponivel", true)
+        .order("nome"),
+    ]);
+
+  if (!restaurante) {
+    return (
+      <p className="py-10 text-center text-sm text-carvao/60">
+        Restaurante ainda não configurado.
+      </p>
+    );
+  }
+
+  const status = statusRestaurante(restaurante);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <section className="flex flex-col gap-3 rounded-xl bg-white p-4 shadow-sm md:p-6 lg:flex-row lg:items-center lg:justify-between lg:gap-8">
+        <div className="flex flex-col gap-2 lg:max-w-xl">
+          <div className="flex items-center gap-3">
+            <h1 className="font-titulo text-2xl text-oliva md:text-3xl">
+              {restaurante.nome}
+            </h1>
+            <span
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold ${
+                status.aberto
+                  ? "bg-green-100 text-green-800"
+                  : "bg-tijolo/10 text-tijolo"
+              }`}
+            >
+              {status.aberto ? "Aberto agora" : "Fechado"}
+            </span>
+          </div>
+          {restaurante.descricao && (
+            <p className="text-sm text-carvao/70">{restaurante.descricao}</p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 lg:w-[320px] lg:shrink-0">
+          <div className="flex flex-col items-center gap-0.5 rounded-lg bg-areia p-2 text-center">
+            <Bike size={20} className="text-oliva" />
+            <span className="text-[11px] text-carvao/60">Entrega</span>
+            <span className="text-sm font-bold">
+              {moeda(restaurante.taxa_entrega ?? 0)}
+            </span>
+          </div>
+          <div className="flex flex-col items-center gap-0.5 rounded-lg bg-areia p-2 text-center">
+            <Clock size={20} className="text-oliva" />
+            <span className="text-[11px] text-carvao/60">Hoje</span>
+            <span className="text-sm font-bold">{status.textoHoje}</span>
+          </div>
+        </div>
+      </section>
+
+      {!status.aberto && (
+        <div className="rounded-xl bg-tijolo/10 p-4 text-sm text-tijolo">
+          Estamos fechados no momento. Dá pra ver o cardápio, mas só é possível
+          finalizar o pedido quando abrirmos.
+        </div>
+      )}
+
+      <CardapioLista categorias={categorias ?? []} produtos={produtos ?? []} />
+    </div>
+  );
+}
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="min-h-screen bg-areia text-carvao">
+      <header className="fixed inset-x-0 top-0 z-50 bg-areia/90 shadow-[0_1px_8px_rgba(0,0,0,0.06)] backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 md:px-6">
+          <div className="flex items-center gap-2">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-oliva text-mostarda">
+              <UtensilsCrossed size={20} />
+            </div>
+            <span className="font-titulo text-lg text-oliva">
+              Missão Lanchonete
+            </span>
+          </div>
+          <Link
+            href="/painel"
+            aria-label="Minha conta"
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-oliva text-white"
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <User size={18} />
+          </Link>
         </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 pb-24 pt-20 md:px-6">
+        <Suspense
+          fallback={<p className="py-10 text-center text-sm">Carregando...</p>}
+        >
+          <Cardapio />
+        </Suspense>
       </main>
+
+      <BarraInferior />
     </div>
   );
 }
