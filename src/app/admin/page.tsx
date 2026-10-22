@@ -5,7 +5,9 @@ import { ArrowRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { moeda } from "@/lib/formatar";
 import AtualizarAuto from "@/components/admin/AtualizarAuto";
-
+import GraficoFaturamento from "@/components/admin/GraficoFaturamento";
+import FiltroPeriodo from "@/components/admin/FiltroPeriodo";
+import GraficoPico from "@/components/admin/GraficoPico";
 type Pedido = {
   id: string | number;
   status: string;
@@ -65,6 +67,30 @@ function dia(valor: string | number | null | undefined) {
   );
 }
 
+function somarDias(d: string, n: number) {
+  const x = new Date(d + "T12:00:00Z");
+  x.setUTCDate(x.getUTCDate() + n);
+  return x.toISOString().slice(0, 10);
+}
+
+function diasEntre(a: string, b: string) {
+  return Math.round(
+    (new Date(b + "T12:00:00Z").getTime() -
+      new Date(a + "T12:00:00Z").getTime()) /
+      86400000
+  );
+}
+
+function horaNum(valor: string | null) {
+  if (!valor) return -1;
+  const h = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: fuso,
+    hour: "numeric",
+    hourCycle: "h23",
+  }).format(new Date(valor));
+  return parseInt(h, 10);
+}
+
 function hora(valor: string | null) {
   if (!valor) return "";
   return new Intl.DateTimeFormat("pt-BR", {
@@ -96,8 +122,13 @@ function Metrica({
   );
 }
 
-async function Conteudo() {
+async function Conteudo({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | undefined>>;
+}) {
   await connection();
+  const sp = await searchParams;
   const supabase = await createClient();
 
   const [{ data: dadosPedidos }, { data: dadosPerfis }] = await Promise.all([
@@ -113,21 +144,42 @@ async function Conteudo() {
 
   const agora = Date.now();
   const hoje = dia(agora);
-  const ontem = dia(agora - 86400000);
-  const semana = new Set(
-    Array.from({ length: 7 }, (_, i) => dia(agora - i * 86400000))
+
+  const ehData = (v?: string) => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const periodo = sp.periodo ?? "7d";
+  let de = somarDias(hoje, -6);
+  let ate = hoje;
+  if (periodo === "hoje") de = hoje;
+  else if (periodo === "30d") de = somarDias(hoje, -29);
+  else if (periodo === "6m") de = somarDias(hoje, -182);
+  else if (periodo === "custom" && ehData(sp.de)) {
+    de = sp.de!;
+    ate = ehData(sp.ate) ? sp.ate! : de;
+    if (ate < de) [de, ate] = [ate, de];
+  }
+
+  const totalDias = diasEntre(de, ate) + 1;
+  const deAnt = somarDias(de, -totalDias);
+  const ateAnt = somarDias(de, -1);
+
+  const entre = (p: Pedido, a: string, b: string) => {
+    const d = dia(dataDe(p));
+    return d >= a && d <= b;
+  };
+
+  const doPeriodo = pedidos.filter((p) => entre(p, de, ate));
+  const validos = doPeriodo.filter((p) => p.status !== "cancelado");
+  const validosAnt = pedidos.filter(
+    (p) => entre(p, deAnt, ateAnt) && p.status !== "cancelado"
   );
+  const faturamento = validos.reduce((s, p) => s + Number(p.total), 0);
+  const ticket = validos.length ? faturamento / validos.length : 0;
+  const entregues = validos.filter((p) => p.status === "entregue").length;
+  const cancelados = doPeriodo.length - validos.length;
 
-  const validosDo = (d: string) =>
-    pedidos.filter((p) => dia(dataDe(p)) === d && p.status !== "cancelado");
-
-  const validosHoje = validosDo(hoje);
-  const faturamento = validosHoje.reduce((s, p) => s + Number(p.total), 0);
-  const ticket = validosHoje.length ? faturamento / validosHoje.length : 0;
-  const entreguesHoje = validosHoje.filter((p) => p.status === "entregue").length;
-  const canceladosHoje = pedidos.filter(
-    (p) => dia(dataDe(p)) === hoje && p.status === "cancelado"
-  ).length;
+  const fmt = (d: string) =>
+    `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+  const rotulo = de === ate ? fmt(de) : `${fmt(de)} a ${fmt(ate)}`;
 
   const ativos = pedidos.filter(
     (p) => p.status !== "entregue" && p.status !== "cancelado"
@@ -143,7 +195,7 @@ async function Conteudo() {
 
   const vendas = new Map<string, { un: number; valor: number }>();
   for (const p of pedidos) {
-    if (p.status === "cancelado" || !semana.has(dia(dataDe(p)))) continue;
+    if (p.status === "cancelado" || !entre(p, de, ate)) continue;
     for (const i of p.itens_pedido ?? []) {
       const atual = vendas.get(i.nome_produto) ?? { un: 0, valor: 0 };
       atual.un += i.quantidade;
@@ -153,6 +205,39 @@ async function Conteudo() {
   }
   const top = [...vendas.entries()].sort((a, b) => b[1].un - a[1].un).slice(0, 4);
   const maior = top[0]?.[1].un ?? 1;
+
+  const porHora = Array.from({ length: 24 }, (_, h) => ({
+    hora: `${h}h`,
+    pedidos: 0,
+  }));
+  for (const p of validos) {
+    const h = horaNum(dataDe(p));
+    if (h >= 0 && h < 24) porHora[h].pedidos += 1;
+  }
+  const horaPico = porHora.reduce((a, b) => (b.pedidos > a.pedidos ? b : a));
+
+  const porMes = totalDias > 31;
+  const chave = (d: string) => (porMes ? d.slice(0, 7) : d);
+  const mapa = new Map<string, { fat: number; n: number }>();
+  for (let i = 0; i < totalDias; i++) {
+    const k = chave(somarDias(de, i));
+    if (!mapa.has(k)) mapa.set(k, { fat: 0, n: 0 });
+  }
+  for (const p of validos) {
+    const a = mapa.get(chave(dia(dataDe(p))));
+    if (a) {
+      a.fat += Number(p.total);
+      a.n += 1;
+    }
+  }
+  const serie = [...mapa.entries()].map(([k, a]) => ({
+    dia: porMes
+      ? k.slice(5, 7) + "/" + k.slice(2, 4)
+      : k.slice(8, 10) + "/" + k.slice(5, 7),
+    faturamento: Math.round(a.fat * 100) / 100,
+    pedidos: a.n,
+    ticket: a.n ? Math.round((a.fat / a.n) * 100) / 100 : 0,
+  }));
 
   const motoboys = perfis.filter((p) => p.papel === "motoboy" && p.ativo);
   const emRota = new Map<string, Pedido>();
@@ -177,19 +262,21 @@ async function Conteudo() {
         <span className="text-sm text-carvao/60 first-letter:uppercase">
   {dataExtenso}
 </span>
-          <h1 className="font-titulo text-3xl text-oliva">Visão geral do dia</h1>
+          <h1 className="font-titulo text-3xl text-oliva">Visão geral</h1>
         </div>
         <AtualizarAuto />
       </div>
 
+      <FiltroPeriodo periodo={periodo} de={de} ate={ate} />
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metrica
-          titulo="Pedidos hoje"
-          valor={String(validosHoje.length)}
-          rodape={`Ontem: ${validosDo(ontem).length}`}
+          titulo="Pedidos"
+          valor={String(validos.length)}
+          rodape={`Período anterior: ${validosAnt.length}`}
         />
         <Metrica
-          titulo="Faturamento hoje"
+          titulo="Faturamento"
           valor={moeda(faturamento)}
           rodape={`Ticket médio: ${moeda(ticket)}`}
         />
@@ -218,11 +305,35 @@ async function Conteudo() {
           </div>
         </div>
         <Metrica
-          titulo="Entregues hoje"
-          valor={String(entreguesHoje)}
-          rodape={`Cancelados hoje: ${canceladosHoje}`}
+          titulo="Entregues"
+          valor={String(entregues)}
+          rodape={`Cancelados: ${cancelados}`}
         />
       </div>
+
+      <section className="flex flex-col gap-4 rounded-xl bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="font-titulo text-xl text-oliva">
+            Faturamento {porMes ? "por mês" : "por dia"}
+          </h2>
+          <span className="text-xs font-bold uppercase text-carvao/60">
+            {rotulo}
+          </span>
+        </div>
+        <GraficoFaturamento dados={serie} />
+      </section>
+
+      <section className="flex flex-col gap-4 rounded-xl bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-titulo text-xl text-oliva">Horário de pico</h2>
+          <span className="text-xs font-bold uppercase text-carvao/60">
+            {horaPico.pedidos > 0
+              ? `Pico: ${horaPico.hora} (${horaPico.pedidos} pedidos) · ${rotulo}`
+              : `Sem pedidos · ${rotulo}`}
+          </span>
+        </div>
+        <GraficoPico dados={porHora} />
+      </section>
 
       <div className="grid items-start gap-6 lg:grid-cols-12">
         <section className="overflow-hidden rounded-xl bg-white shadow-sm lg:col-span-8">
@@ -320,7 +431,7 @@ async function Conteudo() {
             <div className="flex items-center justify-between">
               <h2 className="font-titulo text-xl text-oliva">Mais vendidos</h2>
               <span className="text-xs font-bold uppercase text-carvao/60">
-                7 dias
+                {rotulo}
               </span>
             </div>
             {top.length === 0 && (
@@ -421,13 +532,17 @@ async function Conteudo() {
   );
 }
 
-export default function AdminPage() {
+export default function AdminPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | undefined>>;
+}) {
   return (
     <main className="p-4 md:p-8">
       <Suspense
         fallback={<p className="py-10 text-center text-sm">Carregando...</p>}
       >
-        <Conteudo />
+        <Conteudo searchParams={searchParams} />
       </Suspense>
     </main>
   );
