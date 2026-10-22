@@ -96,6 +96,27 @@ export async function criarPedido(
     }
   }
 
+  type GrupoDb = {
+    id: Id;
+    produto_id: Id;
+    nome: string;
+    obrigatorio: boolean;
+    min_escolhas: number | null;
+    max_escolhas: number | null;
+    opcoes: { id: Id; disponivel: boolean }[] | null;
+  };
+  const { data: gruposDb } = await supabase
+    .from("grupos_opcao")
+    .select(
+      "id, produto_id, nome, obrigatorio, min_escolhas, max_escolhas, opcoes(id, disponivel)"
+    )
+    .in("produto_id", produtoIds);
+  const gruposPorProduto = new Map<string, GrupoDb[]>();
+  for (const g of (gruposDb ?? []) as unknown as GrupoDb[]) {
+    const k = String(g.produto_id);
+    gruposPorProduto.set(k, [...(gruposPorProduto.get(k) ?? []), g]);
+  }
+
   let subtotal = 0;
   const linhas: {
     produtoId: Id;
@@ -121,6 +142,24 @@ export async function criarPedido(
         return { erro: "Uma das opções não está mais disponível. Revise a sacola." };
       }
       opcoes.push({ nome: o.nome, preco_extra: Number(o.preco_extra) });
+    }
+    const escolhidas = new Set(item.opcaoIds.map(String));
+    for (const g of gruposPorProduto.get(String(item.produtoId)) ?? []) {
+      const idsGrupo = (g.opcoes ?? []).map((x) => String(x.id));
+      const disponiveis = (g.opcoes ?? []).filter((x) => x.disponivel).length;
+      if (disponiveis === 0) continue;
+      const qtd = idsGrupo.filter((x) => escolhidas.has(x)).length;
+      const min = g.obrigatorio
+        ? Math.max(g.min_escolhas ?? 1, 1)
+        : (g.min_escolhas ?? 0);
+      if (qtd < min) {
+        return { erro: `Escolha as opções de "${g.nome}" em ${produto.nome}.` };
+      }
+      if (g.max_escolhas && qtd > g.max_escolhas) {
+        return {
+          erro: `Máximo de ${g.max_escolhas} em "${g.nome}" (${produto.nome}).`,
+        };
+      }
     }
     const unitario = Number(produto.preco);
     const extras = opcoes.reduce((s, o) => s + o.preco_extra, 0);
